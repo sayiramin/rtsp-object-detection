@@ -72,3 +72,15 @@ coverage/
 # Temporary files
 tmp/
 temp/
+# Captured photos and images
+captured_photos/
+photos/
+images/
+screenshots/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
+*.webp
