@@ -5,6 +5,9 @@ import json
 import asyncio
 import base64
 import numpy as np
+import time
+import os
+from datetime import datetime
 from typing import List
 from ultralytics import YOLO
 
@@ -39,6 +42,7 @@ alerts = []
 zones = {}
 previous_positions = {}  # Track person positions for movement detection
 previous_chair_positions = {}  # Track chair positions for movement detection
+photos_dir = "captured_photos"  # Directory for saved photos
 
 def init_system():
     global model, cap
@@ -101,37 +105,203 @@ def detect_headgear(frame, person_bbox):
     print(f"Head coverage check: fabric_ratio={fabric_ratio:.2f}, covered={is_covered}")
     return is_covered
 
-def detect_chair_movement(chair_id, current_center):
-    """Detect if chair is being moved/pushed"""
+def save_detection_photo(frame, alert_type, description):
+    """Save photo when chair movement is detected"""
+    try:
+        # Create photos directory if it doesn't exist
+        os.makedirs(photos_dir, exist_ok=True)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{alert_type}_{timestamp}.jpg"
+        filepath = os.path.join(photos_dir, filename)
+        
+        # Add text overlay with detection info
+        overlay_frame = frame.copy()
+        
+        # Add timestamp and description
+        text_lines = [
+            f"DETECTION: {description}",
+            f"TIME: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            f"ALERT: {alert_type.upper()}"
+        ]
+        
+        y_offset = 30
+        for line in text_lines:
+            cv2.putText(overlay_frame, line, (10, y_offset), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            y_offset += 30
+        
+        # Save the photo
+        success = cv2.imwrite(filepath, overlay_frame)
+        
+        if success:
+            print(f"📸 PHOTO SAVED: {filepath}")
+            return filepath
+        else:
+            print(f"❌ Failed to save photo: {filepath}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error saving photo: {e}")
+        return None
+    """Detect dominant clothing color of person"""
+    x1, y1, x2, y2 = person_bbox
+    
+    # Extract torso region (middle 60% of person bbox, skip head)
+    height = y2 - y1
+    torso_start = y1 + int(height * 0.2)  # Skip head
+    torso_end = y1 + int(height * 0.8)    # Skip legs
+    torso_region = frame[torso_start:torso_end, x1:x2]
+    
+    if torso_region.size == 0:
+        return "Unknown"
+    
+    # Convert to HSV for better color analysis
+    hsv = cv2.cvtColor(torso_region, cv2.COLOR_BGR2HSV)
+    
+    # Define color ranges
+    color_ranges = {
+        'Red': ([0, 50, 50], [10, 255, 255]),
+        'Blue': ([100, 50, 50], [130, 255, 255]),
+        'Green': ([40, 50, 50], [80, 255, 255]),
+        'Yellow': ([20, 50, 50], [30, 255, 255]),
+        'Black': ([0, 0, 0], [180, 255, 50]),
+        'White': ([0, 0, 200], [180, 30, 255]),
+        'Purple': ([130, 50, 50], [160, 255, 255]),
+    }
+    
+    max_pixels = 0
+    dominant_color = "Unknown"
+    
+    for color_name, (lower, upper) in color_ranges.items():
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        pixel_count = cv2.countNonZero(mask)
+        
+        if pixel_count > max_pixels:
+            max_pixels = pixel_count
+            dominant_color = color_name
+    
+    return dominant_color
+
+def detect_clothing_color(frame, person_bbox):
+    """Detect dominant clothing color of person"""
+    x1, y1, x2, y2 = person_bbox
+    
+    # Extract torso region (middle 60% of person bbox, skip head)
+    height = y2 - y1
+    torso_start = y1 + int(height * 0.2)  # Skip head
+    torso_end = y1 + int(height * 0.8)    # Skip legs
+    torso_region = frame[torso_start:torso_end, x1:x2]
+    
+    if torso_region.size == 0:
+        return "Unknown"
+    
+    # Convert to HSV for better color analysis
+    hsv = cv2.cvtColor(torso_region, cv2.COLOR_BGR2HSV)
+    
+    # Define color ranges
+    color_ranges = {
+        'Red': ([0, 50, 50], [10, 255, 255]),
+        'Blue': ([100, 50, 50], [130, 255, 255]),
+        'Green': ([40, 50, 50], [80, 255, 255]),
+        'Yellow': ([20, 50, 50], [30, 255, 255]),
+        'Black': ([0, 0, 0], [180, 255, 50]),
+        'White': ([0, 0, 200], [180, 30, 255]),
+        'Purple': ([130, 50, 50], [160, 255, 255]),
+    }
+    
+    max_pixels = 0
+    dominant_color = "Unknown"
+    
+    for color_name, (lower, upper) in color_ranges.items():
+        mask = cv2.inRange(hsv, np.array(lower), np.array(upper))
+        pixel_count = cv2.countNonZero(mask)
+        
+        if pixel_count > max_pixels:
+            max_pixels = pixel_count
+            dominant_color = color_name
+    
+    return dominant_color
+
+def detect_real_chair_movement(chair_id, current_center, current_bbox):
+    """Detect actual chair movement with improved noise filtering"""
     global previous_chair_positions
     
     if chair_id not in previous_chair_positions:
-        previous_chair_positions[chair_id] = current_center
+        previous_chair_positions[chair_id] = {
+            'positions': [current_center],
+            'last_moved': 0
+        }
         return False
     
-    prev_center = previous_chair_positions[chair_id]
-    distance = np.sqrt((current_center[0] - prev_center[0])**2 + (current_center[1] - prev_center[1])**2)
+    prev_data = previous_chair_positions[chair_id]
+    positions = prev_data['positions']
     
-    # Update position
-    previous_chair_positions[chair_id] = current_center
+    # Add current position
+    positions.append(current_center)
     
-    # If chair moved more than 15 pixels, consider as being moved
-    return distance > 15
+    # Keep only last 12 positions for analysis
+    if len(positions) > 12:
+        positions = positions[-12:]
+    
+    # Need at least 8 positions to determine real movement
+    if len(positions) < 8:
+        previous_chair_positions[chair_id]['positions'] = positions
+        return False
+    
+    # Calculate movement using median filtering to reduce noise
+    # Compare first 4 vs last 4 positions
+    first_quarter = positions[:4]
+    last_quarter = positions[-4:]
+    
+    # Calculate average positions
+    first_avg = [sum(p[0] for p in first_quarter) / 4, sum(p[1] for p in first_quarter) / 4]
+    last_avg = [sum(p[0] for p in last_quarter) / 4, sum(p[1] for p in last_quarter) / 4]
+    
+    # Calculate displacement
+    displacement = np.sqrt((last_avg[0] - first_avg[0])**2 + (last_avg[1] - first_avg[1])**2)
+    
+    # Update stored data
+    previous_chair_positions[chair_id] = {
+        'positions': positions,
+        'last_moved': time.time() if displacement > 25 else prev_data['last_moved']
+    }
+    
+    # Real movement requires significant displacement (25+ pixels) over time
+    is_moving = displacement > 25
+    if is_moving:
+        print(f"🪑 CONFIRMED CHAIR MOVEMENT: Chair {chair_id} displaced {displacement:.1f} pixels")
+    
+    return is_moving
 
-def detect_person_with_chair(person_bbox, chair_bbox):
-    """Detect if person is pushing/walking with chair"""
+def detect_person_near_chair(person_bbox, chair_bbox):
+    """Check if person is near chair for interaction"""
     px1, py1, px2, py2 = person_bbox
     cx1, cy1, cx2, cy2 = chair_bbox
     
-    # Calculate centers
     person_center = ((px1 + px2) // 2, (py1 + py2) // 2)
     chair_center = ((cx1 + cx2) // 2, (cy1 + cy2) // 2)
     
-    # Calculate distance between person and chair
     distance = np.sqrt((person_center[0] - chair_center[0])**2 + (person_center[1] - chair_center[1])**2)
+    return distance < 120  # Within 120 pixels
+    """Detect if person is walking/moving"""
+    global previous_positions
     
-    # If person is within 100 pixels of chair, they're likely interacting with it
-    return distance < 100
+    if person_id not in previous_positions:
+        previous_positions[person_id] = current_center
+        return False
+    
+    prev_center = previous_positions[person_id]
+    distance = np.sqrt((current_center[0] - prev_center[0])**2 + (current_center[1] - prev_center[1])**2)
+    
+    # Update position
+    previous_positions[person_id] = current_center
+    
+    # If moved more than 20 pixels, consider as walking
+    return distance > 20
+
+def detect_movement(person_id, current_center):
     """Detect if person is walking/moving"""
     global previous_positions
     
@@ -155,10 +325,7 @@ def detect_objects(frame):
     try:
         results = model(frame, conf=0.5)
         detections = []
-        person_detections = []
-        chair_detections = []
         
-        # First pass: collect all detections
         for result in results:
             boxes = result.boxes
             if boxes is not None:
@@ -167,183 +334,118 @@ def detect_objects(frame):
                     conf = float(box.conf[0].cpu().numpy())
                     cls = int(box.cls[0].cpu().numpy())
                     class_name = model.names[cls]
+                    center = ((x1 + x2) // 2, (y1 + y2) // 2)
                     
                     detection = {
                         'bbox': [x1, y1, x2, y2],
                         'confidence': conf,
                         'class': cls,
                         'class_name': class_name,
-                        'center': ((x1 + x2) // 2, (y1 + y2) // 2)
+                        'center': center
                     }
                     
+                    # Enhanced person detection with clothing color
                     if class_name == 'person':
-                        person_detections.append((i, detection))
+                        try:
+                            clothing_color = detect_clothing_color(frame, [x1, y1, x2, y2])
+                            is_walking = detect_movement(f"person_{i}", center)
+                            detection['clothing_color'] = clothing_color
+                            detection['is_walking'] = is_walking
+                            
+                            color = (0, 255, 0)  # Green for person
+                            label = f"PERSON: {conf:.2f} - {clothing_color}"
+                            if is_walking:
+                                label += " - WALKING"
+                        except Exception as e:
+                            print(f"Person detection error: {e}")
+                            detection['clothing_color'] = "Unknown"
+                            detection['is_walking'] = False
+                            color = (0, 255, 0)
+                            label = f"PERSON: {conf:.2f}"
+                    
+                    # Real chair movement detection
                     elif class_name == 'chair':
-                        chair_detections.append((i, detection))
+                        try:
+                            is_moving = detect_real_chair_movement(f"chair_{i}", center, [x1, y1, x2, y2])
+                            detection['is_moving'] = is_moving
+                            
+                            if is_moving:
+                                # Check for people nearby
+                                people_nearby = []
+                                for other_det in detections:
+                                    if other_det['class_name'] == 'person':
+                                        if detect_person_near_chair(other_det['bbox'], [x1, y1, x2, y2]):
+                                            people_nearby.append(other_det)
+                                detection['people_nearby'] = people_nearby
+                                
+                                color = (0, 255, 255)  # Yellow for moving chair
+                                label = f"CHAIR: {conf:.2f} - MOVING"
+                            else:
+                                color = (255, 0, 0)  # Blue for stationary chair
+                                label = f"CHAIR: {conf:.2f} - STATIONARY"
+                        except Exception as e:
+                            print(f"Chair movement detection error: {e}")
+                            detection['is_moving'] = False
+                            color = (255, 0, 0)
+                            label = f"CHAIR: {conf:.2f}"
+                    
+                    else:
+                        color = (255, 0, 0)  # Blue for other objects
+                        label = f"{class_name}: {conf:.2f}"
+                    
+                    # Draw bounding box
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                    
+                    # Draw label with background
+                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                    cv2.rectangle(frame, (x1, y1 - label_size[1] - 10), 
+                                (x1 + label_size[0], y1), color, -1)
+                    cv2.putText(frame, label, (x1, y1 - 5), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                     
                     detections.append(detection)
         
-        # Second pass: analyze person-chair interactions
-        chair_movement_pairs = []
-        for person_idx, person_det in person_detections:
-            # Check headgear and movement for person
-            has_headgear = detect_headgear(frame, person_det['bbox'])
-            is_walking = detect_movement(f"person_{person_idx}", person_det['center'])
-            
-            person_det['has_headgear'] = has_headgear
-            person_det['is_walking'] = is_walking
-            
-            # Check if person is with a moving chair
-            person_with_chair = False
-            chair_moved = False
-            
-            for chair_idx, chair_det in chair_detections:
-                # Check if chair is moving
-                chair_is_moving = detect_chair_movement(f"chair_{chair_idx}", chair_det['center'])
-                chair_det['is_moving'] = chair_is_moving
-                
-                # Check if person is near the chair
-                if detect_person_with_chair(person_det['bbox'], chair_det['bbox']):
-                    if chair_is_moving and is_walking:
-                        person_with_chair = True
-                        chair_moved = True
-                        chair_movement_pairs.append((person_idx, chair_idx))
-            
-            person_det['with_moving_chair'] = person_with_chair
-        
-        # Third pass: draw all detections with labels
-        for i, detection in enumerate(detections):
-            x1, y1, x2, y2 = detection['bbox']
-            class_name = detection['class_name']
-            conf = detection['confidence']
-            
-            # Determine color and status
-            if class_name == 'person':
-                has_headgear = detection.get('has_headgear', False)
-                is_walking = detection.get('is_walking', False)
-                with_chair = detection.get('with_moving_chair', False)
-                
-                if with_chair:
-                    color = (0, 255, 255)  # Yellow for person moving chair
-                    status = "CHAIR MOVED"
-                elif has_headgear:
-                    color = (0, 255, 0)  # Green for head covered
-                    status = "HEAD COVERED"
-                else:
-                    color = (0, 0, 255)  # Red for no head cover
-                    status = "NO HEAD COVER"
-                
-                if is_walking and not with_chair:
-                    status += " - WALKING"
-                    
-            elif class_name == 'chair':
-                is_moving = detection.get('is_moving', False)
-                if is_moving:
-                    color = (255, 0, 255)  # Magenta for moving chair
-                    status = "MOVING"
-                else:
-                    color = (255, 0, 0)  # Blue for stationary chair
-                    status = "STATIONARY"
-            else:
-                color = (255, 0, 0)  # Blue for other objects
-                status = ""
-            
-            # Draw bounding box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            
-            # Draw label
-            label = f"{class_name}: {conf:.2f}"
-            if status:
-                label += f" - {status}"
-            
-            # Multi-line label for better readability
-            y_offset = y1 - 10
-            for line in label.split(' - '):
-                cv2.putText(frame, line, (x1, y_offset), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                y_offset -= 15
-        
+        moving_chairs = [d for d in detections if d['class_name'] == 'chair' and d.get('is_moving', False)]
+        print(f"🎯 Detected {len(detections)} objects, {len(moving_chairs)} moving chairs")
         return frame, detections
+        
     except Exception as e:
         print(f"Detection error: {e}")
         return frame, []
 
-def check_alerts(detections):
+def check_alerts(detections, current_frame):
     global alerts
     import time
     
+    # Generate alerts for ANY chair movement
     for detection in detections:
-        if detection['class_name'] == 'person':
-            # Alert when NO head cover detected
-            if not detection.get('has_headgear', False):
-                alerts.append({
-                    'type': 'no_headgear',
-                    'timestamp': time.time(),
-                    'bbox': detection['bbox'],
-                    'confidence': detection['confidence'],
-                    'message': '⚠️ SAFETY ALERT: Person without head protection detected'
-                })
+        if detection['class_name'] == 'chair' and detection.get('is_moving', False):
+            # Chair movement detected
+            bbox = [int(x) for x in detection['bbox']]
+            confidence = float(detection['confidence'])
             
-            # Chair movement alert
-            if detection.get('with_moving_chair', False):
-                alerts.append({
-                    'type': 'chair_moved',
-                    'timestamp': time.time(),
-                    'bbox': detection['bbox'],
-                    'confidence': detection['confidence'],
-                    'message': '🪑 CHAIR MOVEMENT: Person moving chair detected'
-                })
+            # Check if person is nearby for context
+            people_nearby = detection.get('people_nearby', [])
+            person_clothing = "Unknown"
+            if people_nearby:
+                person_clothing = people_nearby[0].get('clothing_color', 'Unknown')
             
-            # Zone violation check
-            person_bbox = detection['bbox']
-            person_center = ((person_bbox[0] + person_bbox[2]) // 2,
-                           (person_bbox[1] + person_bbox[3]) // 2)
+            # Save photo of the detection
+            description = f"Chair moved - Person nearby: {person_clothing if people_nearby else 'None'}"
+            photo_path = save_detection_photo(current_frame, "chair_moved", description)
             
-            for zone_id, zone_points in zones.items():
-                if point_in_polygon(person_center, zone_points):
-                    alerts.append({
-                        'type': 'zone_violation',
-                        'timestamp': time.time(),
-                        'zone_id': zone_id,
-                        'bbox': detection['bbox'],
-                        'confidence': detection['confidence'],
-                        'message': f'🚨 INTRUSION ALERT: Unauthorized access to restricted zone "{zone_id}"'
-                    })
-            
-            # Walking detection alert (optional)
-            if detection.get('is_walking', False) and not detection.get('with_moving_chair', False):
-                alerts.append({
-                    'type': 'person_walking',
-                    'timestamp': time.time(),
-                    'bbox': detection['bbox'],
-                    'message': '🚶 MOVEMENT DETECTED: Person walking in monitored area'
-                })
-        
-        elif detection['class_name'] == 'chair':
-            # Alert for chair movement without person (suspicious)
-            if detection.get('is_moving', False):
-                # Check if any person is near this chair
-                chair_with_person = False
-                chair_center = ((detection['bbox'][0] + detection['bbox'][2]) // 2,
-                              (detection['bbox'][1] + detection['bbox'][3]) // 2)
-                
-                for other_det in detections:
-                    if other_det['class_name'] == 'person':
-                        if detect_person_with_chair(other_det['bbox'], detection['bbox']):
-                            chair_with_person = True
-                            break
-                
-                if not chair_with_person:
-                    alerts.append({
-                        'type': 'chair_moved_alone',
-                        'timestamp': time.time(),
-                        'bbox': detection['bbox'],
-                        'confidence': detection['confidence'],
-                        'message': '🚨 SUSPICIOUS ACTIVITY: Chair moving without visible person nearby'
-                    })
+            alerts.append({
+                'type': 'chair_moved',
+                'timestamp': float(time.time()),
+                'bbox': bbox,
+                'confidence': confidence,
+                'message': f'🪑 CHAIR MOVED: {person_clothing + " nearby" if people_nearby else "No person visible"}',
+                'photo_path': photo_path
+            })
+            print(f"✅ CHAIR MOVED + PHOTO: {person_clothing + ' nearby' if people_nearby else 'No person visible'}")
     
-    # Keep last 100 alerts
-    alerts = alerts[-100:]
+    # Keep last 50 alerts and sort by timestamp (newest first)
+    alerts = sorted(alerts[-50:], key=lambda x: x['timestamp'], reverse=True)
 
 def point_in_polygon(point, polygon):
     x, y = point
@@ -412,12 +514,36 @@ async def health_check():
         "alerts_count": len(alerts)
     }
 
-@app.get("/api/status")
+@app.get("/api/photos")
+async def list_photos():
+    """List all captured photos"""
+    try:
+        if not os.path.exists(photos_dir):
+            return {"photos": []}
+        
+        photos = []
+        for filename in os.listdir(photos_dir):
+            if filename.endswith('.jpg'):
+                filepath = os.path.join(photos_dir, filename)
+                stat = os.stat(filepath)
+                photos.append({
+                    'filename': filename,
+                    'timestamp': stat.st_mtime,
+                    'size': stat.st_size,
+                    'path': filepath
+                })
+        
+        # Sort by timestamp (newest first)
+        photos.sort(key=lambda x: x['timestamp'], reverse=True)
+        return {"photos": photos}
+    except Exception as e:
+        print(f"Error listing photos: {e}")
+        return {"photos": []}
 async def get_status():
     return {
-        "pipeline_running": cap is not None and cap.isOpened(),
-        "zones": list(zones.keys()),
-        "recent_alerts": alerts[-10:] if alerts else []
+        "pipeline_running": True,
+        "zones": [],
+        "recent_alerts": []
     }
 
 @app.post("/api/zones")
@@ -451,15 +577,20 @@ async def websocket_video(websocket: WebSocket):
             if cap and cap.isOpened():
                 ret, frame = cap.read()
                 if ret:
-                    # Run detection
+                    print("📹 Processing frame...")
+                    
+                    # Run detection and draw bounding boxes
                     frame_with_detections, detections = detect_objects(frame)
+                    
+                    # Draw zones if any
                     frame_with_detections = draw_zones(frame_with_detections)
                     
-                    # Check alerts
+                    # Generate alerts with photo capture
                     if detections:
-                        check_alerts(detections)
+                        check_alerts(detections, frame_with_detections)
+                        print(f"🎯 Frame processed with {len(detections)} detections")
                     
-                    # Resize for better performance and UI fit
+                    # Resize for performance but keep quality
                     height, width = frame_with_detections.shape[:2]
                     if width > 800:
                         scale = 800 / width
@@ -467,8 +598,8 @@ async def websocket_video(websocket: WebSocket):
                         new_height = int(height * scale)
                         frame_with_detections = cv2.resize(frame_with_detections, (new_width, new_height))
                     
-                    # Encode with good quality
-                    _, buffer = cv2.imencode('.jpg', frame_with_detections, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    # Encode with good quality to see bounding boxes clearly
+                    _, buffer = cv2.imencode('.jpg', frame_with_detections, [cv2.IMWRITE_JPEG_QUALITY, 90])
                     frame_base64 = base64.b64encode(buffer).decode('utf-8')
                     
                     await websocket.send_text(json.dumps({
@@ -503,12 +634,24 @@ async def websocket_alerts(websocket: WebSocket):
     last_alert_count = 0
     
     try:
-        # Send connection confirmation
+        # Send immediate connection confirmation
         await websocket.send_text(json.dumps({
             'type': 'connection_status',
             'status': 'connected',
-            'message': 'Live alerts system connected'
+            'message': 'Live alerts system connected successfully'
         }))
+        print("📤 Sent connection confirmation")
+        
+        # Send a test alert immediately
+        await websocket.send_text(json.dumps({
+            'type': 'alerts',
+            'data': [{
+                'type': 'system_ready',
+                'timestamp': float(time.time()),
+                'message': '🚀 Alert system is ready and working!'
+            }]
+        }))
+        print("📤 Sent test alert")
         
         while True:
             current_alert_count = len(alerts)
@@ -516,13 +659,29 @@ async def websocket_alerts(websocket: WebSocket):
                 new_alerts = alerts[last_alert_count:]
                 print(f"📢 Sending {len(new_alerts)} new alerts to frontend")
                 
+                # Convert alerts to JSON-serializable format
+                serializable_alerts = []
+                for alert in new_alerts:
+                    serializable_alert = {
+                        'type': str(alert['type']),
+                        'timestamp': float(alert['timestamp']),
+                        'message': str(alert['message'])
+                    }
+                    if 'bbox' in alert:
+                        serializable_alert['bbox'] = [int(x) for x in alert['bbox']]
+                    if 'confidence' in alert:
+                        serializable_alert['confidence'] = float(alert['confidence'])
+                    if 'zone_id' in alert:
+                        serializable_alert['zone_id'] = str(alert['zone_id'])
+                    serializable_alerts.append(serializable_alert)
+                
                 await websocket.send_text(json.dumps({
                     'type': 'alerts',
-                    'data': new_alerts
+                    'data': serializable_alerts
                 }))
                 last_alert_count = current_alert_count
             
-            await asyncio.sleep(0.3)  # Check more frequently
+            await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         print("❌ Alerts WebSocket client disconnected")
         manager.disconnect(websocket)
