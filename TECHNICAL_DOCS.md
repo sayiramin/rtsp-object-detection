@@ -324,3 +324,35 @@ ws://localhost:8002/ws/alerts
 ✅ Scalable architecture for future enhancements
 
 This technical documentation provides complete context for future development and maintenance of the RTSP Object Detection System.
+
+## Chair Movement Detection System
+
+### Enhanced Algorithm (v2.0 - January 2026)
+The system implements a sophisticated chair movement detection algorithm that eliminates false positives while maintaining high accuracy:
+
+**Core Algorithm:**
+- **Multi-Frame Analysis**: Tracks chair positions across 12 consecutive frames
+- **Median Filtering**: Compares averaged positions from first 4 vs last 4 frames
+- **Displacement Threshold**: Requires 25+ pixel movement to confirm real chair movement
+- **Noise Elimination**: Filters out detection box fluctuations from person movement around chair
+
+**Technical Implementation:**
+```python
+def detect_real_chair_movement(chair_id, current_center, current_bbox):
+    # Collects 12 position samples
+    # Calculates first quarter vs last quarter averages
+    # Measures displacement between averaged positions
+    # Returns True only for displacement > 25 pixels
+```
+
+**Alert Generation:**
+- **Single Alert Type**: `chair_moved` (simplified from previous person-dependent logic)
+- **Context Information**: Includes nearby person clothing color when available
+- **Photo Capture**: Automatic timestamped photo with detection overlays
+- **Console Logging**: `🪑 CONFIRMED CHAIR MOVEMENT: Chair chair_0 displaced 28.5 pixels`
+
+**Accuracy Improvements:**
+- ✅ **Eliminated**: False positives from person walking around stationary chair
+- ✅ **Eliminated**: Camera shake and detection noise triggers  
+- ✅ **Maintained**: High sensitivity to actual chair pushing/movement
+- ✅ **Enhanced**: Forensic evidence quality with reliable photo capture

@@ -5,13 +5,23 @@ A real-time object detection system that processes RTSP video streams to detect 
 ## Features
 
 - 🎥 **Real-time RTSP Stream Processing** - Captures and processes video from RTSP sources
-- 👤 **Person Detection** - Uses YOLOv8 for accurate person detection
+- 👤 **Person Detection** - Uses YOLOv8 for accurate person detection with clothing color analysis
 - 🎩 **Headgear Detection** - Custom algorithm to detect headgear compliance
 - 🚫 **Zone Monitoring** - Configurable restricted areas with polygon drawing
-- 🪑 **Object Carrying Detection** - Detects people carrying chairs or other objects
+- 🪑 **Enhanced Chair Movement Detection** - Advanced algorithm with false positive elimination
+- 📸 **Automatic Photo Capture** - Timestamped evidence photos with detection overlays
 - 🔔 **Live Alerts** - Real-time alert system with WebSocket notifications
 - 🌐 **Web Interface** - Modern React frontend with live video feed
 - ⚙️ **Configuration Panel** - Easy zone setup and system monitoring
+
+## Recent Updates (January 2026)
+
+### Chair Movement Detection v2.0
+- ✅ **Enhanced Accuracy**: 12-frame analysis with median filtering eliminates false positives
+- ✅ **Noise Reduction**: Filters out detection box fluctuations from person movement around chair
+- ✅ **Higher Threshold**: 25+ pixel displacement requirement for confirmed movement
+- ✅ **Simplified Logic**: Single alert type with contextual person information
+- ✅ **Reliable Evidence**: Improved photo capture with better detection overlays
 
 ## Architecture
 
