@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RTSP Object Detection</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: white;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        .video-section {
+            background: #2a2a2a;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        .connected { background: rgba(34, 197, 94, 0.2); }
+        .disconnected { background: rgba(239, 68, 68, 0.2); }
+        canvas {
+            max-width: 100%;
+            border: 2px solid #333;
+            border-radius: 8px;
+        }
+        .alerts {
+            background: #2a2a2a;
+            padding: 20px;
+            border-radius: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .alert-item {
+            padding: 10px;
+            margin: 5px 0;
+            background: rgba(251, 191, 36, 0.1);
+            border-left: 4px solid #fbbf24;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎥 RTSP Object Detection System</h1>
+        </div>
+        
+        <div class="video-section">
+            <h3>Live Detection Feed</h3>
+            <div id="status" class="status disconnected">🔴 Disconnected</div>
+            <canvas id="videoCanvas"></canvas>
+        </div>
+        
+        <div class="alerts">
+            <h3>Live Alerts</h3>
+            <div id="alertsList">No alerts yet</div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('videoCanvas');
+        const ctx = canvas.getContext('2d');
+        const status = document.getElementById('status');
+        const alertsList = document.getElementById('alertsList');
+        
+        let videoWs = null;
+        let alertsWs = null;
+        let alerts = [];
+
+        function connectVideo() {
+            videoWs = new WebSocket('ws://localhost:8002/ws/video');
+            
+            videoWs.onopen = () => {
+                status.textContent = '🟢 Connected';
+                status.className = 'status connected';
+                console.log('Video WebSocket connected');
+            };
+            
+            videoWs.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'frame' && data.data) {
+                        drawFrame(data.data);
+                    }
+                } catch (error) {
+                    console.error('Error parsing video data:', error);
+                }
+            };
+            
+            videoWs.onclose = () => {
+                status.textContent = '🔴 Disconnected';
+                status.className = 'status disconnected';
+                console.log('Video WebSocket disconnected');
+                // Reconnect after 2 seconds
+                setTimeout(connectVideo, 2000);
+            };
+            
+            videoWs.onerror = (error) => {
+                console.error('Video WebSocket error:', error);
+            };
+        }
+
+        function connectAlerts() {
+            alertsWs = new WebSocket('ws://localhost:8002/ws/alerts');
+            
+            alertsWs.onopen = () => {
+                console.log('Alerts WebSocket connected');
+            };
+            
+            alertsWs.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'alerts' && data.data) {
+                        alerts.push(...data.data);
+                        updateAlerts();
+                    }
+                } catch (error) {
+                    console.error('Error parsing alerts data:', error);
+                }
+            };
+            
+            alertsWs.onclose = () => {
+                console.log('Alerts WebSocket disconnected');
+                setTimeout(connectAlerts, 2000);
+            };
+        }
+
+        function drawFrame(base64Data) {
+            const img = new Image();
+            img.onload = () => {
+                canvas.width = img.width;
+                canvas.height = img.height;
+                ctx.drawImage(img, 0, 0);
+            };
+            img.src = `data:image/jpeg;base64,${base64Data}`;
+        }
+
+        function updateAlerts() {
+            if (alerts.length === 0) {
+                alertsList.innerHTML = 'No alerts yet';
+                return;
+            }
+            
+            const recentAlerts = alerts.slice(-10).reverse();
+            alertsList.innerHTML = recentAlerts.map(alert => `
+                <div class="alert-item">
+                    <strong>${alert.type.replace('_', ' ').toUpperCase()}</strong><br>
+                    Time: ${new Date(alert.timestamp * 1000).toLocaleTimeString()}<br>
+                    ${alert.confidence ? `Confidence: ${(alert.confidence * 100).toFixed(1)}%` : ''}
+                </div>
+            `).join('');
+        }
+
+        // Start connections
+        connectVideo();
+        connectAlerts();
+        
+        // Test backend connection
+        fetch('http://localhost:8002/health')
+            .then(response => response.json())
+            .then(data => {
+                console.log('Backend health:', data);
+            })
+            .catch(error => {
+                console.error('Backend connection failed:', error);
+            });
+    </script>
+</body>
+</html>
