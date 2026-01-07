@@ -38,6 +38,7 @@ cap = None
 alerts = []
 zones = {}
 previous_positions = {}  # Track person positions for movement detection
+previous_chair_positions = {}  # Track chair positions for movement detection
 
 def init_system():
     global model, cap
@@ -100,7 +101,37 @@ def detect_headgear(frame, person_bbox):
     print(f"Head coverage check: fabric_ratio={fabric_ratio:.2f}, covered={is_covered}")
     return is_covered
 
-def detect_movement(person_id, current_center):
+def detect_chair_movement(chair_id, current_center):
+    """Detect if chair is being moved/pushed"""
+    global previous_chair_positions
+    
+    if chair_id not in previous_chair_positions:
+        previous_chair_positions[chair_id] = current_center
+        return False
+    
+    prev_center = previous_chair_positions[chair_id]
+    distance = np.sqrt((current_center[0] - prev_center[0])**2 + (current_center[1] - prev_center[1])**2)
+    
+    # Update position
+    previous_chair_positions[chair_id] = current_center
+    
+    # If chair moved more than 15 pixels, consider as being moved
+    return distance > 15
+
+def detect_person_with_chair(person_bbox, chair_bbox):
+    """Detect if person is pushing/walking with chair"""
+    px1, py1, px2, py2 = person_bbox
+    cx1, cy1, cx2, cy2 = chair_bbox
+    
+    # Calculate centers
+    person_center = ((px1 + px2) // 2, (py1 + py2) // 2)
+    chair_center = ((cx1 + cx2) // 2, (cy1 + cy2) // 2)
+    
+    # Calculate distance between person and chair
+    distance = np.sqrt((person_center[0] - chair_center[0])**2 + (person_center[1] - chair_center[1])**2)
+    
+    # If person is within 100 pixels of chair, they're likely interacting with it
+    return distance < 100
     """Detect if person is walking/moving"""
     global previous_positions
     
@@ -124,7 +155,10 @@ def detect_objects(frame):
     try:
         results = model(frame, conf=0.5)
         detections = []
+        person_detections = []
+        chair_detections = []
         
+        # First pass: collect all detections
         for result in results:
             boxes = result.boxes
             if boxes is not None:
@@ -134,47 +168,100 @@ def detect_objects(frame):
                     cls = int(box.cls[0].cpu().numpy())
                     class_name = model.names[cls]
                     
-                    # Check headgear for persons
-                    has_headgear = False
-                    is_walking = False
-                    if class_name == 'person':
-                        has_headgear = detect_headgear(frame, [x1, y1, x2, y2])
-                        person_center = ((x1 + x2) // 2, (y1 + y2) // 2)
-                        is_walking = detect_movement(f"person_{i}", person_center)
-                    
-                    # Color coding: Green if covered, Red if not covered
-                    if class_name == 'person':
-                        color = (0, 255, 0) if has_headgear else (0, 0, 255)
-                        status = "HEAD COVERED" if has_headgear else "NO HEAD COVER"
-                    else:
-                        color = (255, 0, 0)
-                        status = ""
-                    
-                    # Draw bounding box
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                    
-                    # Draw label
-                    label = f"{class_name}: {conf:.2f}"
-                    if class_name == 'person':
-                        label += f" - {status}"
-                        if is_walking:
-                            label += " - WALKING"
-                    
-                    # Multi-line label for better readability
-                    y_offset = y1 - 10
-                    for line in label.split(' - '):
-                        cv2.putText(frame, line, (x1, y_offset), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                        y_offset -= 15
-                    
-                    detections.append({
+                    detection = {
                         'bbox': [x1, y1, x2, y2],
                         'confidence': conf,
                         'class': cls,
                         'class_name': class_name,
-                        'has_headgear': has_headgear if class_name == 'person' else None,
-                        'is_walking': is_walking if class_name == 'person' else False
-                    })
+                        'center': ((x1 + x2) // 2, (y1 + y2) // 2)
+                    }
+                    
+                    if class_name == 'person':
+                        person_detections.append((i, detection))
+                    elif class_name == 'chair':
+                        chair_detections.append((i, detection))
+                    
+                    detections.append(detection)
+        
+        # Second pass: analyze person-chair interactions
+        chair_movement_pairs = []
+        for person_idx, person_det in person_detections:
+            # Check headgear and movement for person
+            has_headgear = detect_headgear(frame, person_det['bbox'])
+            is_walking = detect_movement(f"person_{person_idx}", person_det['center'])
+            
+            person_det['has_headgear'] = has_headgear
+            person_det['is_walking'] = is_walking
+            
+            # Check if person is with a moving chair
+            person_with_chair = False
+            chair_moved = False
+            
+            for chair_idx, chair_det in chair_detections:
+                # Check if chair is moving
+                chair_is_moving = detect_chair_movement(f"chair_{chair_idx}", chair_det['center'])
+                chair_det['is_moving'] = chair_is_moving
+                
+                # Check if person is near the chair
+                if detect_person_with_chair(person_det['bbox'], chair_det['bbox']):
+                    if chair_is_moving and is_walking:
+                        person_with_chair = True
+                        chair_moved = True
+                        chair_movement_pairs.append((person_idx, chair_idx))
+            
+            person_det['with_moving_chair'] = person_with_chair
+        
+        # Third pass: draw all detections with labels
+        for i, detection in enumerate(detections):
+            x1, y1, x2, y2 = detection['bbox']
+            class_name = detection['class_name']
+            conf = detection['confidence']
+            
+            # Determine color and status
+            if class_name == 'person':
+                has_headgear = detection.get('has_headgear', False)
+                is_walking = detection.get('is_walking', False)
+                with_chair = detection.get('with_moving_chair', False)
+                
+                if with_chair:
+                    color = (0, 255, 255)  # Yellow for person moving chair
+                    status = "CHAIR MOVED"
+                elif has_headgear:
+                    color = (0, 255, 0)  # Green for head covered
+                    status = "HEAD COVERED"
+                else:
+                    color = (0, 0, 255)  # Red for no head cover
+                    status = "NO HEAD COVER"
+                
+                if is_walking and not with_chair:
+                    status += " - WALKING"
+                    
+            elif class_name == 'chair':
+                is_moving = detection.get('is_moving', False)
+                if is_moving:
+                    color = (255, 0, 255)  # Magenta for moving chair
+                    status = "MOVING"
+                else:
+                    color = (255, 0, 0)  # Blue for stationary chair
+                    status = "STATIONARY"
+            else:
+                color = (255, 0, 0)  # Blue for other objects
+                status = ""
+            
+            # Draw bounding box
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            
+            # Draw label
+            label = f"{class_name}: {conf:.2f}"
+            if status:
+                label += f" - {status}"
+            
+            # Multi-line label for better readability
+            y_offset = y1 - 10
+            for line in label.split(' - '):
+                cv2.putText(frame, line, (x1, y_offset), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                y_offset -= 15
         
         return frame, detections
     except Exception as e:
@@ -197,6 +284,16 @@ def check_alerts(detections):
                     'message': '⚠️ SAFETY ALERT: Person without head protection detected'
                 })
             
+            # Chair movement alert
+            if detection.get('with_moving_chair', False):
+                alerts.append({
+                    'type': 'chair_moved',
+                    'timestamp': time.time(),
+                    'bbox': detection['bbox'],
+                    'confidence': detection['confidence'],
+                    'message': '🪑 CHAIR MOVEMENT: Person moving chair detected'
+                })
+            
             # Zone violation check
             person_bbox = detection['bbox']
             person_center = ((person_bbox[0] + person_bbox[2]) // 2,
@@ -214,13 +311,36 @@ def check_alerts(detections):
                     })
             
             # Walking detection alert (optional)
-            if detection.get('is_walking', False):
+            if detection.get('is_walking', False) and not detection.get('with_moving_chair', False):
                 alerts.append({
                     'type': 'person_walking',
                     'timestamp': time.time(),
                     'bbox': detection['bbox'],
                     'message': '🚶 MOVEMENT DETECTED: Person walking in monitored area'
                 })
+        
+        elif detection['class_name'] == 'chair':
+            # Alert for chair movement without person (suspicious)
+            if detection.get('is_moving', False):
+                # Check if any person is near this chair
+                chair_with_person = False
+                chair_center = ((detection['bbox'][0] + detection['bbox'][2]) // 2,
+                              (detection['bbox'][1] + detection['bbox'][3]) // 2)
+                
+                for other_det in detections:
+                    if other_det['class_name'] == 'person':
+                        if detect_person_with_chair(other_det['bbox'], detection['bbox']):
+                            chair_with_person = True
+                            break
+                
+                if not chair_with_person:
+                    alerts.append({
+                        'type': 'chair_moved_alone',
+                        'timestamp': time.time(),
+                        'bbox': detection['bbox'],
+                        'confidence': detection['confidence'],
+                        'message': '🚨 SUSPICIOUS ACTIVITY: Chair moving without visible person nearby'
+                    })
     
     # Keep last 100 alerts
     alerts = alerts[-100:]
