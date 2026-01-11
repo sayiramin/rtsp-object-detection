@@ -449,3 +449,60 @@ body {
     flex-direction: row;
   }
 }
+/* Zone drawing enhancements */
+.drawing-instructions {
+  background: rgba(0, 255, 0, 0.1);
+  border: 2px solid #00ff00;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+.drawing-instructions p {
+  margin: 5px 0;
+  font-weight: bold;
+  color: #00ff00;
+}
+
+.drawing-instructions button {
+  margin: 5px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.clear-btn {
+  background: #ff4444;
+  color: white;
+}
+
+.clear-btn:hover {
+  background: #ff6666;
+  transform: scale(1.05);
+}
+
+.complete-btn {
+  background: #00ff00;
+  color: black;
+}
+
+.complete-btn:hover {
+  background: #44ff44;
+  transform: scale(1.05);
+}
+
+/* Enhanced canvas styling */
+canvas {
+  cursor: crosshair;
+  border: 2px solid #333;
+  border-radius: 8px;
+  transition: border-color 0.2s;
+}
+
+canvas:hover {
+  border-color: #00ff00;
+}

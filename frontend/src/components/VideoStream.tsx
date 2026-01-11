@@ -88,24 +88,54 @@ const VideoStream: React.FC<VideoStreamProps> = ({ wsUrl, onZoneDrawn, isDrawing
       canvas.height = img.height;
       ctx.drawImage(img, 0, 0);
       
-      // Draw current drawing points
+      // Draw current drawing points with enhanced visuals
       if (isDrawingMode && drawingPoints.length > 0) {
+        // Draw connecting lines
         ctx.strokeStyle = '#00ff00';
-        ctx.lineWidth = 3;
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]); // Dashed line
         ctx.beginPath();
         ctx.moveTo(drawingPoints[0][0], drawingPoints[0][1]);
         for (let i = 1; i < drawingPoints.length; i++) {
           ctx.lineTo(drawingPoints[i][0], drawingPoints[i][1]);
         }
         ctx.stroke();
+        ctx.setLineDash([]); // Reset to solid line
         
-        // Draw points
-        ctx.fillStyle = '#00ff00';
-        drawingPoints.forEach(point => {
+        // Draw points with numbers
+        drawingPoints.forEach((point, index) => {
+          // Draw point circle
+          ctx.fillStyle = '#00ff00';
           ctx.beginPath();
-          ctx.arc(point[0], point[1], 5, 0, 2 * Math.PI);
+          ctx.arc(point[0], point[1], 6, 0, 2 * Math.PI);
           ctx.fill();
+          
+          // Draw point border
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(point[0], point[1], 6, 0, 2 * Math.PI);
+          ctx.stroke();
+          
+          // Draw point number
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 12px Arial';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText((index + 1).toString(), point[0], point[1]);
         });
+        
+        // Draw preview line to show where next point would connect
+        if (drawingPoints.length >= 3) {
+          ctx.strokeStyle = '#ffff00';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(drawingPoints[drawingPoints.length - 1][0], drawingPoints[drawingPoints.length - 1][1]);
+          ctx.lineTo(drawingPoints[0][0], drawingPoints[0][1]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       }
     };
     img.onerror = (error) => {
@@ -167,7 +197,21 @@ const VideoStream: React.FC<VideoStreamProps> = ({ wsUrl, onZoneDrawn, isDrawing
       
       {isDrawingMode && (
         <div className="drawing-instructions">
-          <p>🎯 Zone Drawing Mode: Click to add points, double-click to finish</p>
+          <p>🎯 Zone Drawing Mode: Click to add points ({drawingPoints.length} points)</p>
+          {drawingPoints.length >= 3 && (
+            <p>✅ Ready to finish! Double-click or press 'Complete Zone' to finish</p>
+          )}
+          {drawingPoints.length > 0 && (
+            <button onClick={clearDrawing} className="clear-btn">Clear Points</button>
+          )}
+          {drawingPoints.length >= 3 && (
+            <button onClick={() => {
+              onZoneDrawn(drawingPoints);
+              setDrawingPoints([]);
+            }} className="complete-btn">Complete Zone</button>
+          )}
+        </div>
+      )}
           <p>Points: {drawingPoints.length}</p>
           <button onClick={clearDrawing} className="btn-clear">Clear Points</button>
         </div>
