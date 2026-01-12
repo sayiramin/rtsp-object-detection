@@ -11,6 +11,7 @@ const VideoStream: React.FC<VideoStreamProps> = ({ wsUrl, onZoneDrawn, isDrawing
   const [connected, setConnected] = useState(false);
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [drawingPoints, setDrawingPoints] = useState<[number, number][]>([]);
+  const [isMaximized, setIsMaximized] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -65,7 +66,20 @@ const VideoStream: React.FC<VideoStreamProps> = ({ wsUrl, onZoneDrawn, isDrawing
   useEffect(() => {
     connectWebSocket();
 
+    // Add keyboard shortcut for maximize/minimize (Escape key)
+    const handleKeyPress = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && isMaximized) {
+        setIsMaximized(false);
+      }
+      if (event.key === 'f' || event.key === 'F') {
+        setIsMaximized(!isMaximized);
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyPress);
+
     return () => {
+      document.removeEventListener('keydown', handleKeyPress);
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
@@ -73,7 +87,7 @@ const VideoStream: React.FC<VideoStreamProps> = ({ wsUrl, onZoneDrawn, isDrawing
         wsRef.current.close();
       }
     };
-  }, [wsUrl]);
+  }, [wsUrl, isMaximized]);
 
   const drawFrame = (base64Data: string) => {
     const canvas = canvasRef.current;
@@ -180,18 +194,27 @@ const VideoStream: React.FC<VideoStreamProps> = ({ wsUrl, onZoneDrawn, isDrawing
   };
 
   return (
-    <div className="video-stream">
+    <div className={`video-stream ${isMaximized ? 'maximized' : ''}`}>
       <div className="stream-header">
         <h3>Live Detection Feed</h3>
-        <div className="connection-status">
-          <span className={`status ${connected ? 'connected' : 'disconnected'}`}>
-            {connected ? '🟢 Connected' : '🔴 Disconnected'}
-          </span>
-          {!connected && reconnectAttempts > 0 && (
-            <span className="reconnect-info">
-              Reconnecting... ({reconnectAttempts}/10)
+        <div className="header-controls">
+          <button 
+            onClick={() => setIsMaximized(!isMaximized)}
+            className="maximize-btn"
+            title={isMaximized ? 'Minimize (Esc)' : 'Maximize (F)'}
+          >
+            {isMaximized ? '🗗' : '🗖'}
+          </button>
+          <div className="connection-status">
+            <span className={`status ${connected ? 'connected' : 'disconnected'}`}>
+              {connected ? '🟢 Connected' : '🔴 Disconnected'}
             </span>
-          )}
+            {!connected && reconnectAttempts > 0 && (
+              <span className="reconnect-info">
+                Reconnecting... ({reconnectAttempts}/10)
+              </span>
+            )}
+          </div>
         </div>
       </div>
       
